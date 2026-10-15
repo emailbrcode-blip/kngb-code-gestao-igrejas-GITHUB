@@ -1,0 +1,1051 @@
+// Schema — Sistema de Gestão e Site BrCode >_
+// Preparado para múltiplas igrejas (multi-tenant) desde o início.
+// Fases seguintes (membros, obreiros, escalas, financeiro etc.)
+// serão adicionadas aqui sem alterar o que já existe.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  active
+  inactive
+  archived
+}
+
+enum ChurchStatus {
+  active
+  inactive
+}
+
+enum MemberStatus {
+  active
+  inactive
+  visitor
+  transferred
+  away
+}
+
+enum WorkerStatus {
+  active
+  inactive
+  archived
+}
+
+enum EcclesiasticalRoleStatus {
+  active
+  inactive
+}
+
+enum DayOfWeek {
+  monday
+  tuesday
+  wednesday
+  thursday
+  friday
+  saturday
+  sunday
+}
+
+enum AvailabilityStatus {
+  available
+  unavailable
+  partial
+}
+
+enum ScheduleAssignmentStatus {
+  pending
+  called
+  confirmed
+  declined
+  substituted
+}
+
+enum EventStatus {
+  scheduled
+  cancelled
+  completed
+}
+
+enum AnnouncementPriority {
+  normal
+  important
+  urgent
+}
+
+enum AnnouncementAudience {
+  all
+  members
+  workers
+  leadership
+}
+
+enum NotificationType {
+  schedule_new
+  schedule_updated
+  event
+  announcement
+  system
+  donation
+  campaign
+  worship
+  ministry
+  volunteer
+  meeting
+  birthday
+  visitor
+  prayer_request
+  other
+}
+
+enum FinancialEntryType {
+  income
+  expense
+}
+
+enum FinancialEntryStatus {
+  pending
+  paid
+}
+
+// Cada igreja é um tenant isolado. Toda entidade que pertence a uma
+// igreja carrega churchId, e o isolamento é sempre aplicado no backend
+// (nunca confiar apenas no frontend para filtrar por igreja).
+model Church {
+  id        String       @id @default(uuid())
+  name      String       // nome da igreja desta instalação
+  slug      String       @unique // ex: "minha-igreja" — deve coincidir com VITE_CHURCH_SLUG no frontend
+  status    ChurchStatus @default(active)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+  publicSiteEnabled Boolean @default(false) @map("public_site_enabled")
+  publicDescription String? @map("public_description")
+  publicAddress String? @map("public_address")
+  publicPhone String? @map("public_phone")
+  publicEmail String? @map("public_email")
+  publicServiceTimes String? @map("public_service_times")
+  publicHistory String? @map("public_history")
+  publicMission String? @map("public_mission")
+  publicVision String? @map("public_vision")
+  publicValues String? @map("public_values")
+  publicWhatsapp String? @map("public_whatsapp")
+  publicInstagram String? @map("public_instagram")
+  publicFacebook String? @map("public_facebook")
+  publicYoutube String? @map("public_youtube")
+  publicPixKey String? @map("public_pix_key")
+  publicPixInstructions String? @map("public_pix_instructions")
+  // Conteúdo extra do site público (imagens, vídeos, ministérios, logo, links…) — JSON opcional.
+  publicExtras Json? @map("public_extras")
+
+  users     User[]
+  roles     Role[]       // roles customizadas específicas desta igreja (ver Role.churchId)
+  auditLogs AuditLog[]
+
+  members         Member[]
+  workerFunctions WorkerFunction[]
+  ecclesiasticalRoles EcclesiasticalRole[]
+  workers         Worker[]
+  schedules       Schedule[]
+  events              Event[]
+  announcements       Announcement[]
+  financialCategories FinancialCategory[]
+  financialEntries    FinancialEntry[]
+  notifications       Notification[]
+  worships    Worship[]
+  sermons     Sermon[]
+  donationCampaigns DonationCampaign[]
+  donations         Donation[]
+  donationItems DonationItem[]
+  donationStatusHistory DonationStatusHistory[]
+  campaignExpenses CampaignExpense[]
+  campaignFinanceTransfers CampaignFinanceTransfer[]
+  reminderLogs ReminderLog[]
+  ministries Ministry[]
+  mediaItems MediaItem[]
+  liveStreams LiveStream[]
+  visitors Visitor[]
+  prayerRequests PrayerRequest[]
+  smallGroups SmallGroup[]
+  bulletins Bulletin[]
+    availabilityExceptions AvailabilityException[]
+
+  @@map("churches")
+}
+
+model User {
+  id           String     @id @default(uuid())
+  name         String
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  roleId       String     @map("role_id")
+  role         Role       @relation(fields: [roleId], references: [id])
+  churchId     String     @map("church_id")
+  church       Church     @relation(fields: [churchId], references: [id], onDelete: Restrict)
+  status       UserStatus @default(active)
+  lastLoginAt  DateTime?  @map("last_login_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+  worker        Worker?  // vínculo opcional: nem todo obreiro cadastrado tem login
+  member        Member?
+  notifications Notification[]
+  donationParticipations Donation[] @relation("DonationUser")
+  responsibleCampaigns DonationCampaign[] @relation("CampaignResponsible")
+  donationStatusChanges DonationStatusHistory[]
+  remindersSent ReminderLog[] @relation("ReminderActor")
+  remindersReceived ReminderLog[] @relation("ReminderRecipient")
+  ledMinistries Ministry[] @relation("MinistryLeader")
+  prayerRequests PrayerRequest[]
+  ledSmallGroups SmallGroup[] @relation("GroupLeader")
+  announcementsAuthored Announcement[]
+    availabilityExceptionsManaged AvailabilityException[] @relation("AvailabilityExceptionActor")
+
+  @@index([churchId])
+  @@map("users")
+}
+
+// As 6 roles do sistema (admin_geral, admin_financeiro, admin_obreiros,
+// membresia, obreiro, membro) são globais: churchId = null.
+// churchId só é preenchido para roles customizadas criadas no futuro
+// por uma igreja específica. O slug continua único globalmente para
+// não quebrar a lógica de autorização existente (authorize('slug')).
+model Role {
+  id          String   @id @default(uuid())
+  name        String   // ex: "Administrador Geral"
+  slug        String   @unique // ex: "admin_geral"
+  description String?
+  churchId    String?  @map("church_id") // null = role global do sistema
+  church      Church?  @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  users           User[]
+  rolePermissions RolePermission[]
+
+  @@index([churchId])
+  @@map("roles")
+}
+
+// Permissões continuam globais (não pertencem a uma igreja específica) —
+// o conjunto de permissões do sistema é o mesmo para todas as igrejas.
+model Permission {
+  id          String   @id @default(uuid())
+  slug        String   @unique // ex: "users.manage", "settings.manage"
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+// Tabela pivô N:N entre Role e Permission
+model RolePermission {
+  roleId       String     @map("role_id")
+  permissionId String     @map("permission_id")
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?  @map("user_id")
+  user      User?    @relation(fields: [userId], references: [id])
+  churchId  String?  @map("church_id") // nullable para eventos de sistema anteriores à existência de uma igreja (ex: bootstrap do seed)
+  church    Church?  @relation(fields: [churchId], references: [id], onDelete: SetNull)
+  action    String   // ex: "user.created", "auth.login"
+  module    String   // ex: "users", "auth"
+  targetId  String?  @map("target_id")
+  metadata  Json?
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([churchId])
+  @@index([userId])
+  @@map("audit_logs")
+  @@index([churchId, createdAt(sort: Desc)], map: "audit_logs_church_created_idx")
+
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("refresh_tokens")
+  @@index([tokenHash], map: "refresh_tokens_token_hash_idx")
+
+}
+
+// ============================================================
+// BLOCO 3 — Membros, Obreiros e Escalas
+// ============================================================
+
+model Member {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  fullName      String       @map("full_name")
+  userId        String?      @unique @map("user_id")
+  user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  phone         String?
+  whatsapp      String?
+  email         String?
+  birthDate     DateTime?    @map("birth_date")
+  address       String?
+  joinDate      DateTime?    @map("join_date")
+  status        MemberStatus @default(active)
+  ministry      String?
+  groupName     String?      @map("group_name")
+  notes         String?
+  photoUrl      String?      @map("photo_url")
+  // Data de saída/desligamento
+exitDate      DateTime?    @map("exit_date")
+
+// Número RMA permanente
+rmaNumber     Int          @unique @default(dbgenerated("nextval('rma_number_seq'::regclass)")) @map("rma_number")
+
+  // Responsável (ex: pai/mãe de um membro menor de idade) — auto-relação opcional.
+  responsibleId String?  @map("responsible_id")
+  responsible   Member?  @relation("MemberResponsible", fields: [responsibleId], references: [id], onDelete: SetNull)
+  dependents    Member[] @relation("MemberResponsible")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  ecclesiasticalRoles MemberEcclesiasticalRole[]
+  donations           Donation[]
+  idCard              IdCard?
+
+  @@index([churchId])
+  @@map("members")
+}
+
+// Cargo eclesiástico (Pastor, Presbítero, Diácono, Missionário...).
+// Mesmo padrão de WorkerFunction/Role: churchId nulo = cargo padrão do
+// sistema, preenchido = cargo customizado de uma igreja específica.
+// Isso é o CATÁLOGO de cargos — quem está em qual cargo, e desde
+// quando, vive em MemberEcclesiasticalRole (histórico).
+model EcclesiasticalRole {
+  id       String                   @id @default(uuid())
+  name     String
+  slug     String                   @unique
+  description String?
+  status   EcclesiasticalRoleStatus @default(active)
+  churchId String?                  @map("church_id")
+  church   Church?                  @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  memberAssignments MemberEcclesiasticalRole[]
+
+  @@index([churchId])
+  @@map("ecclesiastical_roles")
+}
+
+// Histórico de cargo por membro. Uma linha com endDate = null é o cargo
+// ATUAL do membro; ao trocar de cargo, a linha aberta é fechada
+// (endDate preenchido) e uma nova é criada — nunca sobrescreve.
+model MemberEcclesiasticalRole {
+  id       String @id @default(uuid())
+  memberId String @map("member_id")
+  member   Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  ecclesiasticalRoleId String             @map("ecclesiastical_role_id")
+  ecclesiasticalRole   EcclesiasticalRole @relation(fields: [ecclesiasticalRoleId], references: [id])
+
+  startDate DateTime  @default(now()) @map("start_date")
+  endDate   DateTime? @map("end_date")
+  notes     String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([memberId])
+  @@map("member_ecclesiastical_roles")
+}
+
+// Funções de obreiro (Diácono, Presbítero, Louvor, Mídia...). Igual ao
+// padrão de Role: churchId nulo = função padrão do sistema, preenchido =
+// função customizada criada por uma igreja específica. Isso satisfaz o
+// requisito de "criar novas funções sem alterar o código".
+model WorkerFunction {
+  id       String  @id @default(uuid())
+  name     String
+  slug     String  @unique
+  churchId String? @map("church_id")
+  church   Church? @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  workers     Worker[]
+  assignments ScheduleAssignment[]
+
+  @@index([churchId])
+  @@map("worker_functions")
+}
+
+model Worker {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  // Vínculo opcional com um usuário do sistema — só obreiros que precisam
+  // logar (ver própria escala, confirmar presença) têm isso preenchido.
+  userId String? @unique @map("user_id")
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  name       String
+  phone      String?
+  whatsapp   String?
+  email      String?
+  photoUrl   String?       @map("photo_url")
+  ministry   String?
+  functionId String?       @map("function_id")
+  function   WorkerFunction? @relation(fields: [functionId], references: [id])
+  joinDate   DateTime?     @map("join_date")
+  status     WorkerStatus  @default(active)
+  // Registro RMA do obreiro
+  rmaNumber  Int           @unique @default(dbgenerated("nextval('rma_number_seq'::regclass)")) @map("rma_number")
+  notes      String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  availability Availability[]
+  availabilityExceptions AvailabilityException[]
+  assignments  ScheduleAssignment[]
+  sermons      Sermon[] // pregações registradas quando o pregador é um obreiro cadastrado
+  idCard       IdCard?
+  @@index([churchId])
+  @@map("workers")
+}
+
+// Disponibilidade por dia da semana. Múltiplas linhas por dia são
+// permitidas (ex: domingo 08–12 disponível, domingo 18–22 indisponível),
+// conforme o exemplo do documento do projeto. startTime/endTime em
+// formato "HH:mm" simples — sem fuso, granularidade fina fica para a
+// escala inteligente (fase futura).
+model Availability {
+  id       String @id @default(uuid())
+  workerId String @map("worker_id")
+  worker   Worker @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  dayOfWeek DayOfWeek           @map("day_of_week")
+  status    AvailabilityStatus  @default(available)
+  startTime String?             @map("start_time")
+  endTime   String?             @map("end_time")
+  notes     String?
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([workerId, dayOfWeek])
+  @@map("availability")
+}
+
+model AvailabilityException {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  workerId String @map("worker_id")
+  worker Worker @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  date DateTime @db.Date
+  status AvailabilityStatus
+  startTime String? @map("start_time")
+  endTime String? @map("end_time")
+  notes String?
+  changedById String? @map("changed_by_id")
+  changedBy User? @relation("AvailabilityExceptionActor", fields: [changedById], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now()) @map("created_at")
+  active Boolean @default(true)
+  @@index([churchId, workerId, date])
+  @@map("availability_exceptions")
+}
+
+model Schedule {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  title     String   // ex: "Culto de Domingo — Manhã"
+  type      String   // culto, evento, recepção, louvor, mídia... (texto livre por ora)
+  date      DateTime
+  startTime String?  @map("start_time")
+  endTime   String?  @map("end_time")
+  notes     String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  assignments ScheduleAssignment[]
+  worship     Worship?
+  visitors    Visitor[]
+
+  @@index([churchId])
+  @@index([date])
+  @@map("schedules")
+}
+
+model ScheduleAssignment {
+  id         String @id @default(uuid())
+  scheduleId String @map("schedule_id")
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  workerId String @map("worker_id")
+  worker   Worker @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  functionId String?         @map("function_id")
+  function   WorkerFunction? @relation(fields: [functionId], references: [id])
+
+  status ScheduleAssignmentStatus @default(pending)
+  notes  String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Um obreiro não pode ser escalado duas vezes na mesma escala.
+  @@unique([scheduleId, workerId])
+  @@index([workerId])
+  @@map("schedule_assignments")
+}
+
+// ============================================================
+// PROTÓTIPO — Eventos, Avisos, Financeiro e Notificações
+// ============================================================
+
+model Event {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  date        DateTime
+  startTime   String?     @map("start_time")
+  endTime     String?     @map("end_time")
+  location    String?
+  responsible String?
+  capacity    Int?
+  imageUrl    String?     @map("image_url")
+  status      EventStatus @default(scheduled)
+  isPublic    Boolean     @default(false) @map("is_public")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([churchId])
+  @@index([date])
+  visitors Visitor[]
+  @@map("events")
+}
+
+model Announcement {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  title    String
+  body     String
+  priority AnnouncementPriority @default(normal)
+  audience AnnouncementAudience @default(all)
+
+  authorId String? @map("author_id")
+  author   User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  publishedAt DateTime? @map("published_at")
+  expiresAt   DateTime? @map("expires_at")
+  archived    Boolean   @default(false)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([churchId])
+  @@map("announcements")
+}
+
+// Categorias financeiras: mesmo padrão de WorkerFunction/Role — churchId
+// nulo = categoria padrão do sistema, preenchido = customizada da igreja.
+model FinancialCategory {
+  id       String              @id @default(uuid())
+  name     String
+  slug     String              @unique
+  type     FinancialEntryType
+  churchId String?             @map("church_id")
+  church   Church?             @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  entries FinancialEntry[]
+
+  @@index([churchId])
+  @@map("financial_categories")
+}
+
+model FinancialEntry {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  type          FinancialEntryType
+  categoryId    String?               @map("category_id")
+  category      FinancialCategory?    @relation(fields: [categoryId], references: [id])
+  description   String
+  amount        Decimal               @db.Decimal(12, 2)
+  date          DateTime
+  dueDate       DateTime?             @map("due_date")
+  status        FinancialEntryStatus  @default(paid)
+  paymentMethod String?               @map("payment_method")
+  notes         String?
+  attachmentUrl String?               @map("attachment_url")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  campaignTransfer CampaignFinanceTransfer?
+
+  @@index([churchId])
+  @@index([date])
+  @@map("financial_entries")
+}
+
+// Notificações internas. Uma linha por destinatário — se uma escala tem
+// 4 obreiros, são geradas 4 notificações (uma por worker.user).
+model Notification {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type        NotificationType
+  title       String
+  body        String
+  relatedType String? @map("related_type") // ex: "schedule", "event", "announcement"
+  relatedId   String? @map("related_id")
+  link String?
+
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([churchId])
+  @@map("notifications")
+  @@index([userId, createdAt(sort: Desc)], map: "notifications_user_created_idx")
+}
+
+// ============================================================
+// FASE 2 / BLOCO B — Culto, Palavra, Louvor
+// ============================================================
+
+// Culto/reunião com dados ministeriais (tema, pregador, presença).
+// Distinto de Schedule: Schedule cuida de QUEM está escalado para
+// trabalhar; Worship cuida do QUE aconteceu no culto em si. Um Worship
+// pode opcionalmente estar ligado a um Schedule já existente.
+model Worship {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  date            DateTime
+  startTime       String?  @map("start_time")
+  endTime         String?  @map("end_time")
+  type            String   // culto_domingo, culto_oracao, culto_ensino, especial... (texto livre, configurável)
+  theme           String?
+  attendanceCount Int?     @map("attendance_count")
+  notes           String?
+
+  scheduleId String?   @unique @map("schedule_id")
+  schedule   Schedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  sermon Sermon?
+  songs  WorshipSong[]
+  visitors Visitor[]
+
+  @@index([churchId])
+  @@index([date])
+  @@map("worships")
+}
+
+// Palavra ministrada — pregador pode ser um obreiro cadastrado
+// (preacherWorkerId) OU um nome livre (preacherName), para cobrir
+// pregadores visitantes que não têm cadastro no sistema.
+model Sermon {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  worshipId String  @unique @map("worship_id")
+  worship   Worship @relation(fields: [worshipId], references: [id], onDelete: Cascade)
+
+  preacherWorkerId String? @map("preacher_worker_id")
+  preacherWorker   Worker? @relation(fields: [preacherWorkerId], references: [id], onDelete: SetNull)
+  preacherName     String? @map("preacher_name")
+
+  title           String?
+  scripture       String? // referência bíblica
+  theme           String?
+  summary         String?
+  durationMinutes Int?    @map("duration_minutes")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([churchId])
+  @@map("sermons")
+}
+
+// Repertório de louvor de um culto — dado que não existia em nenhuma
+// tabela anterior (ScheduleAssignment sabe QUEM toca, não O QUE toca).
+model WorshipSong {
+  id        String  @id @default(uuid())
+  worshipId String  @map("worship_id")
+  worship   Worship @relation(fields: [worshipId], references: [id], onDelete: Cascade)
+
+  title    String
+  position Int?    // ordem no repertório
+  notes    String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([worshipId])
+  @@map("worship_songs")
+}
+
+// ============================================================
+// FASE 2 / BLOCO D — Doações e Campanha do Bolo dos Aniversariantes
+// ============================================================
+
+enum DonationStatus {
+  registered
+  confirmed
+  cancelled
+}
+
+// "Bolo dos Aniversariantes" é só mais um registro aqui, com
+// type = "aniversariantes" — não é uma tabela separada, conforme pedido
+// de não misturar automaticamente com outras categorias financeiras
+// (Donation é uma ledger própria, nunca vira FinancialEntry automático).
+model DonationCampaign {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+  type        String   @default("campanha") // oferta, dizimo, doacao, campanha, missao, evento, aniversariantes...
+  goalAmount  Decimal? @map("goal_amount") @db.Decimal(12, 2)
+  goalQuantity Decimal? @map("goal_quantity") @db.Decimal(12, 3)
+  quantityUnit String? @map("quantity_unit")
+  imageUrl String? @map("image_url")
+  responsibleName String? @map("responsible_name")
+  responsibleId String? @map("responsible_id")
+  responsible User? @relation("CampaignResponsible", fields: [responsibleId], references: [id], onDelete: SetNull)
+  isPublic Boolean @default(true) @map("is_public")
+  startDate   DateTime? @map("start_date")
+  endDate     DateTime? @map("end_date")
+  active      Boolean  @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  donations Donation[]
+  items DonationItem[]
+  expenses CampaignExpense[]
+  financeTransfers CampaignFinanceTransfer[]
+
+  @@index([churchId])
+  @@map("donation_campaigns")
+}
+
+model Donation {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+  church   Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  campaignId String?           @map("campaign_id")
+  campaign   DonationCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  itemId String? @map("item_id")
+  item DonationItem? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+
+  // Doador: membro cadastrado OU nome livre (visitante/anônimo)
+  donorMemberId String? @map("donor_member_id")
+  donorMember   Member? @relation(fields: [donorMemberId], references: [id], onDelete: SetNull)
+  donorName     String? @map("donor_name")
+  donorUserId   String? @map("donor_user_id")
+  donorUser     User?   @relation("DonationUser", fields: [donorUserId], references: [id], onDelete: SetNull)
+
+  amount        Decimal?       @db.Decimal(12, 2)
+  kind          String         @default("money")
+  quantity      Decimal?       @db.Decimal(12, 3)
+  unit          String?
+  estimatedAmount Decimal?     @map("estimated_amount") @db.Decimal(12, 2)
+  serviceDescription String?   @map("service_description")
+  date          DateTime
+  type          String         // oferta, dizimo, doacao, campanha, missao, evento, outro
+  paymentMethod String?        @map("payment_method") // pix, dinheiro, cartao, transferencia, outro
+  reference     String?
+  notes         String?
+  status        DonationStatus @default(registered)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  statusHistory DonationStatusHistory[]
+
+  @@index([churchId])
+  @@index([campaignId])
+  @@index([date])
+  @@map("donations")
+}
+
+// Necessidades/itens associados à campanha. Doações em dinheiro podem
+// apontar para um item; a tabela Donation continua sendo o registro financeiro independente.
+model DonationItem {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  campaignId String @map("campaign_id")
+  campaign DonationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  name String
+  description String?
+  targetAmount Decimal? @map("target_amount") @db.Decimal(12, 2)
+  targetQuantity Decimal? @map("target_quantity") @db.Decimal(12, 3)
+  unit String?
+  active Boolean @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  donations Donation[]
+  @@index([churchId, campaignId])
+  @@map("donation_items")
+}
+
+model DonationStatusHistory {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  donationId String @map("donation_id")
+  donation Donation @relation(fields: [donationId], references: [id], onDelete: Cascade)
+  changedById String? @map("changed_by_id")
+  changedBy User? @relation(fields: [changedById], references: [id], onDelete: SetNull)
+  fromStatus DonationStatus? @map("from_status")
+  toStatus DonationStatus @map("to_status")
+  amount Decimal? @db.Decimal(12,2)
+  quantity Decimal? @db.Decimal(12,3)
+  note String?
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([churchId, donationId])
+  @@map("donation_status_history")
+}
+
+model CampaignExpense {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  campaignId String @map("campaign_id")
+  campaign DonationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  description String
+  amount Decimal @db.Decimal(12,2)
+  date DateTime
+  notes String?
+  createdById String? @map("created_by_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([churchId, campaignId, date])
+  @@map("campaign_expenses")
+}
+
+model CampaignFinanceTransfer {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  campaignId String @map("campaign_id")
+  campaign DonationCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  financialEntryId String @unique @map("financial_entry_id")
+  financialEntry FinancialEntry @relation(fields: [financialEntryId], references: [id], onDelete: Restrict)
+  amount Decimal @db.Decimal(12,2)
+  date DateTime
+  reference String?
+  notes String?
+  createdById String? @map("created_by_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([churchId, campaignId])
+  @@map("campaign_finance_transfers")
+}
+
+model ReminderLog {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  recipientId String @map("recipient_id")
+  recipient User @relation("ReminderRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  actorId String? @map("actor_id")
+  actor User? @relation("ReminderActor", fields: [actorId], references: [id], onDelete: SetNull)
+  sourceType String @map("source_type")
+  sourceId String @map("source_id")
+  automatic Boolean @default(false)
+  sentAt DateTime @default(now()) @map("sent_at")
+  @@index([churchId, sourceType, sourceId, sentAt])
+  @@map("reminder_logs")
+}
+
+model Ministry {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  name String
+  description String?
+  leaderId String? @map("leader_id")
+  leader User? @relation("MinistryLeader", fields: [leaderId], references: [id], onDelete: SetNull)
+  imageUrl String? @map("image_url")
+  isPublic Boolean @default(false) @map("is_public")
+  active Boolean @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([churchId, active])
+  @@map("ministries")
+}
+
+model MediaItem {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  title String
+  description String?
+  kind String
+  url String
+  published Boolean @default(false)
+  publishedAt DateTime? @map("published_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([churchId, published, publishedAt])
+  @@map("media_items")
+}
+
+model LiveStream {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  title String
+  description String?
+  url String
+  startsAt DateTime? @map("starts_at")
+  live Boolean @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([churchId, live])
+  @@map("live_streams")
+}
+
+model Visitor {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  name String
+  phone String?
+  whatsapp String?
+  visitedAt DateTime @default(now()) @map("visited_at")
+  worshipId String? @map("worship_id")
+  worship Worship? @relation(fields: [worshipId], references: [id], onDelete: SetNull)
+  scheduleId String? @map("schedule_id")
+  schedule Schedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  eventId String? @map("event_id")
+  event Event? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  howFound String? @map("how_found")
+  address String?
+  notes String?
+  companions String?
+  mayContact Boolean @default(false) @map("may_contact")
+  interest String?
+  followUpNeeded Boolean @default(false) @map("follow_up_needed")
+  createdById String? @map("created_by_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([churchId, visitedAt])
+  @@index([churchId, scheduleId, visitedAt])
+  @@index([churchId, eventId, visitedAt])
+  @@index([worshipId])
+  @@map("visitors")
+}
+
+model PrayerRequest {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  userId String? @map("user_id")
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  title String
+  message String
+  category String?
+  anonymous Boolean @default(false)
+  status String @default("open")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([churchId, status, createdAt])
+  @@map("prayer_requests")
+}
+
+model SmallGroup {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  name String
+  description String?
+  leaderId String? @map("leader_id")
+  leader User? @relation("GroupLeader", fields: [leaderId], references: [id], onDelete: SetNull)
+  location String?
+  meetingSchedule String? @map("meeting_schedule")
+  active Boolean @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([churchId, active])
+  @@map("small_groups")
+}
+
+model Bulletin {
+  id String @id @default(uuid())
+  churchId String @map("church_id")
+  church Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  title String
+  content String
+  imageUrl String? @map("image_url")
+  published Boolean @default(false)
+  publishedAt DateTime? @map("published_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@index([churchId, published, publishedAt])
+  @@map("bulletins")
+}
+// Carteirinha digital (membro OU obreiro)
+model IdCard {
+  id       String @id @default(uuid())
+  churchId String @map("church_id")
+
+  memberId String? @unique @map("member_id")
+  member   Member? @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  workerId String? @unique @map("worker_id")
+  worker   Worker? @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  code         String    @unique
+  issuedAt     DateTime  @default(now()) @map("issued_at")
+  lastIssuedAt DateTime  @default(now()) @map("last_issued_at")
+  issueCount   Int       @default(1) @map("issue_count")
+  issuedById   String?   @map("issued_by_id")
+  revokedAt    DateTime? @map("revoked_at")
+
+
+  @@index([churchId])
+  @@map("id_cards")
+}

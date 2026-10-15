@@ -1,0 +1,20 @@
+{
+  "name": "brcode-gestao-igrejas",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace backend",
+    "start:backend": "npm start --workspace backend",
+    "dev:frontend": "npm run dev --workspace frontend",
+    "build": "npm run build --workspace frontend",
+    "prisma:generate": "npm run prisma:generate --workspace backend"
+  },
+  "engines": {
+    "node": "20.19.6"
+  },
+  "description": "Sistema de Gestão e Site BrCode >_ — plataforma-base para igrejas"
+}

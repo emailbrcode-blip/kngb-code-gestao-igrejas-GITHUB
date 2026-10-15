@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-canvas text-ink font-sans antialiased;
+}
+
+/* Foco de teclado visível — acessibilidade, nunca remover outline sem substituto */
+:focus-visible {
+  outline: 2px solid theme('colors.metal.DEFAULT');
+  outline-offset: 2px;
+}
+
+/* Site público (/igreja): rolagem suave e respeito a prefers-reduced-motion */
+html.site-smooth {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  html.site-smooth { scroll-behavior: auto; }
+  .animate-site-in, .animate-site-sheet { animation: none !important; }
+}
