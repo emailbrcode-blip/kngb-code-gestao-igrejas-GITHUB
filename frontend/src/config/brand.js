@@ -1,8 +1,8 @@
 // Marca PERMANENTE do software (não é a identidade da igreja cliente).
 // A identidade da igreja (nome, logo, textos…) vem do cadastro/CMS de cada instalação.
 export const BRAND = {
-  product: 'Sistema de gestão de igrejas — Sua igreja conectada. Sua gestão simplificada.',
-  short: 'Sistema de gestão de igrejas — Sua igreja conectada. Sua gestão simplificada.',
+   product: 'Sistema de gestão de igrejas — CAMERJ — Sua igreja conectada. Sua gestão simplificada.',
+  short: 'Sistema de gestão de igrejas Conveniadas —  CAMERJ.',
   slogan: 'O justo viverá pela Fé!',
   developer: 'KNGB Code',
   // Identificador interno de portfólio da BR Code (terceiro sistema).

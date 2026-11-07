@@ -12,9 +12,9 @@ export default defineConfig({
       injectRegister: false,
 
       manifest: {
-        name: 'BrCode Sistema de gestão inteligente',
-        short_name: 'BrCode',
-        description: 'Sistema de gestão e site institucional para igrejas — O justo viverá pela Fé!',
+        name: 'KNGB - code. Sistema de gestão inteligente',
+        short_name: 'Igrejas',
+        description: 'Sistema de gestão e site institucional para igrejas — CAMERJ',
         start_url: '/',
         lang: 'pt-BR',
         scope: '/',
